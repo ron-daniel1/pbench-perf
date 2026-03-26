@@ -1,5 +1,20 @@
 {{- /*gotype:pbench/cmd/genddl.Schema*/ -}}
 {{- if .TargetSchema }}
+{{- if .TargetCatalog }}
+{{- if .Iceberg }}
+USE {{ .TargetCatalog }};
+CREATE SCHEMA IF NOT EXISTS {{ .TargetSchema }} LOCATION '{{ .S3TargetLocation }}/';
+
+USE {{ .TargetCatalog }}.{{ .TargetSchema }};
+{{- else }}
+CREATE SCHEMA IF NOT EXISTS {{ .TargetCatalog }}.{{ .TargetSchema }}
+WITH (
+  location = '{{ .S3TargetLocation }}/'
+);
+
+USE {{ .TargetCatalog }}.{{ .TargetSchema }};
+{{- end }}
+{{- else }}
 {{- if .Iceberg }}
 USE iceberg;
 CREATE SCHEMA IF NOT EXISTS {{ .TargetSchema }} LOCATION '{{ .S3TargetLocation }}/';
@@ -13,12 +28,8 @@ WITH (
 
 USE hive.{{ .TargetSchema }};
 {{- end }}
+{{- end }}
 
-{{- if .RegisterTables }}
-{{ range .RegisterTables }}
-CALL iceberg.system.register_table('{{ $.TargetSchema }}', '{{ .TableName }}', '{{ $.S3TargetLocation }}/{{ .ExternalLocation }}/{{ .TableName }}/metadata');
-{{- end }}
-{{- end }}
 {{ range .Tables }}
 CREATE TABLE IF NOT EXISTS {{ .Name }} (
 {{- $first := true }}
@@ -29,6 +40,7 @@ CREATE TABLE IF NOT EXISTS {{ .Name }} (
   {{- end }}
   {{ .Name }} {{ .Type }}
 {{- end }})
+{{- if eq $.Engine "spark" }}
 {{- if $.Iceberg }}
 USING iceberg
 {{- if .Partitioned }}
@@ -41,9 +53,26 @@ WITH (
   format = 'PARQUET',
   {{- if .Partitioned }}
   partitioned_by = array['{{ .LastColumn.Name }}'],
-  external_location = '{{ $.S3TargetLocation }}/{{ .Name }}/data'
+  external_location = '{{ $.S3TargetLocation }}/{{ .Name }}/'
   {{- else }}
-  external_location = '{{ $.S3TargetLocation }}/{{ .Name }}/data'
+  external_location = '{{ $.S3TargetLocation }}/{{ .Name }}/'
+  {{- end }}
+);
+{{- end }}
+{{- else }}
+WITH (
+  format = 'PARQUET'
+  {{- if $.Iceberg }}
+  {{- if .Partitioned }},
+  partitioning = ARRAY['{{ .LastColumn.Name }}']
+  {{- end }}
+  {{- else }}
+  {{- if .Partitioned }},
+  partitioned_by = array['{{ .LastColumn.Name }}'],
+  external_location = '{{ $.S3TargetLocation }}/{{ .Name }}/'
+  {{- else }},
+  external_location = '{{ $.S3TargetLocation }}/{{ .Name }}/'
+  {{- end }}
   {{- end }}
 );
 {{- end }}

@@ -20,6 +20,7 @@ type Schema struct {
 	Iceberg             bool              `json:"iceberg"`
 	CompressionMethod   string            `json:"compression_method"`
 	Partitioned         bool              `json:"partitioned"`
+	Engine              string            `json:"engine"`
 	Workload            string            `json:"workload"`
 	WorkloadDefinition  string            `json:"workload_definition"`
 	SchemaName          string            `json:"schema_name"`
@@ -32,6 +33,8 @@ type Schema struct {
 	SourceSchema        string            `json:"source_schema"`
 	TargetSchema        string            `json:"target_schema"`
 	SourceFileFormat    string            `json:"source_file_format"`
+	SourceCatalog       string            `json:"source_catalog"`
+	TargetCatalog       string            `json:"target_catalog"`
 	RegisterTables      []*RegisterTable  `json:"register_tables"`
 	Tables              map[string]*Table `json:"tables"`
 	InsertTables        map[string]*Table `json:"insert_tables"`
@@ -51,7 +54,10 @@ type Table struct {
 	Partitioned         bool      `json:"partitioned"`
 	PartitionedMinScale int       `json:"partitioned_min_scale"`
 	Columns             []*Column `json:"columns"`
-	LastColumn          *Column
+	// LastColumn holds the partition key column for use in SQL templates (PARTITIONED BY clause).
+	// For Hive tables, this will be the physically last column after reordering.
+	// For Iceberg tables, this is identified by the partition_key flag and can be at any position.
+	LastColumn *Column
 }
 
 type RegisterTable struct {
@@ -125,7 +131,6 @@ func generateSchemaFromDef(schema *Schema, defDir string, configDir string, outp
 		f, fileErr := os.ReadFile(filePath)
 		if fileErr != nil {
 			log.Fatal().Err(fileErr).Str("file", entry.Name()).Msg("Failed to read file")
-			continue
 		}
 
 		tbl := new(Table)
@@ -139,19 +144,14 @@ func generateSchemaFromDef(schema *Schema, defDir string, configDir string, outp
 			tbl.Partitioned = true
 		}
 
-		if isRegisterTable(tbl, schema) {
-			var registerTable RegisterTable
-			registerTable.TableName = tbl.Name
-			registerTable.ExternalLocation = externalLoc
-			schema.RegisterTables = append(schema.RegisterTables, &registerTable)
-		} else {
-			tbl.reorderColumns(schema) // Move PartitionKey columns to the bottom
-			tbl.LastColumn = tbl.Columns[len(tbl.Columns)-1]
-			schema.Tables[tbl.Name] = tbl
+		// For Hive, partition columns must be physically last in the table definition
+		// For Iceberg, partition columns can be anywhere, but we still need to identify them
+		if !schema.Iceberg {
+			tbl.reorderColumns(schema) // Move PartitionKey columns to the bottom (Hive only)
 		}
-		if isInsertTable(tbl, schema) {
-			schema.InsertTables[tbl.Name] = tbl
-		}
+		tbl.setLastColumn() // Identify the partition column for template use
+		schema.Tables[tbl.Name] = tbl
+		schema.InsertTables[tbl.Name] = tbl
 	}
 
 	generateCreateTable(schema, configDir, outputDirs, *step)
@@ -264,7 +264,11 @@ func execTemplate(schema *Schema, tmpl *template.Template, fName string, outputD
 func cleanOutputDir(dir string) error {
 	files, err := os.ReadDir(dir)
 	if err != nil {
-		return nil
+		// If directory doesn't exist, nothing to clean
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
 	}
 
 	for _, file := range files {
@@ -284,29 +288,15 @@ func (s *Schema) shouldGenInsert() bool {
 	return s.Iceberg
 }
 
-func isRegisterTable(table *Table, schema *Schema) bool {
-	if schema.Iceberg && schema.Partitioned {
-		return !table.Partitioned
-	}
-	return false
-}
-
-func isInsertTable(table *Table, schema *Schema) bool {
-	if schema.Partitioned {
-		return table.Partitioned
-	}
-	return true
-}
-
 func getNamedOutput(configData []byte, workload string) (string, error) {
-	var config map[string]string
+	var config map[string]interface{}
 	if err := json.Unmarshal(configData, &config); err != nil {
 		return "", err
 	}
 
-	scaleFactor := config["scale_factor"]
-	fileFormat := config["file_format"]
-	compressionMethod := config["compression_method"]
+	scaleFactor := config["scale_factor"].(string)
+	fileFormat := config["file_format"].(string)
+	compressionMethod := config["compression_method"].(string)
 	var compressionSuffix string
 	if compressionMethod == "uncompressed" {
 		compressionSuffix = ""
@@ -338,6 +328,10 @@ func loadSchemas(data []byte) ([]*Schema, error) {
 	}
 	if base.WorkloadDefinition == "" {
 		base.WorkloadDefinition = "tpc-ds"
+	}
+	// Default engine to presto if not specified
+	if base.Engine == "" {
+		base.Engine = "presto"
 	}
 
 	combinations := []struct {
@@ -398,6 +392,7 @@ func (t *Table) reorderColumns(s *Schema) {
 	}
 
 	// Collect all partition key columns and move them to the end, preserving their relative order.
+	// This is required for Hive tables where partition columns must be physically last.
 	var nonPartition, partition []*Column
 	for _, col := range t.Columns {
 		if col.PartitionKey != nil && *col.PartitionKey {
@@ -409,6 +404,25 @@ func (t *Table) reorderColumns(s *Schema) {
 	if len(partition) > 0 {
 		t.Columns = append(nonPartition, partition...)
 	}
+}
+
+func (t *Table) setLastColumn() {
+	if len(t.Columns) == 0 {
+		return
+	}
+
+	// Find the partition key column (used in templates for PARTITIONED BY clause)
+	// For Hive: partition column is physically last after reorderColumns()
+	// For Iceberg: partition column can be anywhere, so we search for it
+	for _, col := range t.Columns {
+		if col.PartitionKey != nil && *col.PartitionKey {
+			t.LastColumn = col
+			return
+		}
+	}
+
+	// If no partition key found, use the last column (for non-partitioned tables)
+	t.LastColumn = t.Columns[len(t.Columns)-1]
 }
 
 func (s *Schema) setSessionVars() {

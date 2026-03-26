@@ -1,11 +1,20 @@
 {{- /*gotype:pbench/cmd/genddl.Schema*/ -}}
 {{- if .SourceSchema }}
+{{- if .SourceCatalog }}
+CREATE SCHEMA IF NOT EXISTS {{ .SourceCatalog }}.{{ .SourceSchema }}
+WITH (
+  location = '{{ .S3SourceLocation }}/'
+);
+
+USE {{ .SourceCatalog }}.{{ .SourceSchema }};
+{{- else }}
 CREATE SCHEMA IF NOT EXISTS hive.{{ .SourceSchema }}
 WITH (
   location = '{{ .S3SourceLocation }}/'
 );
 
 USE hive.{{ .SourceSchema }};
+{{- end }}
 
 {{ range .Tables }}
 CREATE TABLE IF NOT EXISTS {{ .Name }} (

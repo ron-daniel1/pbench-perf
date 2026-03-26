@@ -1,13 +1,21 @@
 {{- /*gotype:pbench/cmd/genddl.Schema*/ -}}
 {{- if .TargetSchema }}
+{{- if .TargetCatalog }}
+USE {{ .TargetCatalog }}.{{ .TargetSchema }};
+{{- else }}
 {{- if .Iceberg }}
 USE iceberg.{{ .TargetSchema }};
 {{- else }}
 USE hive.{{ .TargetSchema }};
 {{- end }}
+{{- end }}
 
 {{ range .InsertTables -}}
+{{- if $.TargetCatalog }}
+INSERT INTO {{ $.TargetCatalog }}.{{ $.TargetSchema }}.{{ .Name }}
+{{- else }}
 INSERT INTO {{ .Name }}
+{{- end }}
 SELECT
 {{- $first := true }}
 {{- range .Columns }}
@@ -29,7 +37,7 @@ SELECT
     {{- end }}
   {{- end }}
 {{- end }}
-FROM {{ if $.SourceSchema }}hive.{{ $.SourceSchema }}.{{ .Name }}{{ else }}{{ $.Workload }}.sf{{ $.ScaleFactor }}.{{ .Name }}{{ end }};
+FROM {{ if $.SourceSchema }}{{ if $.SourceCatalog }}{{ $.SourceCatalog }}.{{ $.SourceSchema }}.{{ .Name }}{{ else }}hive.{{ $.SourceSchema }}.{{ .Name }}{{ end }}{{ else }}{{ $.Workload }}.sf{{ $.ScaleFactor }}.{{ .Name }}{{ end }};
 
 {{ end }}
 {{- range .InsertTables -}}
