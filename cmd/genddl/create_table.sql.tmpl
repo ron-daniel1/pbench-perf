@@ -3,7 +3,10 @@
 {{- if .TargetCatalog }}
 {{- if .Iceberg }}
 USE {{ .TargetCatalog }};
-CREATE SCHEMA IF NOT EXISTS {{ .TargetSchema }} LOCATION '{{ .S3TargetLocation }}/';
+CREATE SCHEMA IF NOT EXISTS {{ .TargetSchema }}
+WITH (
+  location = '{{ .S3TargetLocation }}/'
+);
 
 USE {{ .TargetCatalog }}.{{ .TargetSchema }};
 {{- else }}
@@ -17,7 +20,10 @@ USE {{ .TargetCatalog }}.{{ .TargetSchema }};
 {{- else }}
 {{- if .Iceberg }}
 USE iceberg;
-CREATE SCHEMA IF NOT EXISTS {{ .TargetSchema }} LOCATION '{{ .S3TargetLocation }}/';
+CREATE SCHEMA IF NOT EXISTS {{ .TargetSchema }}
+WITH (
+  location = '{{ .S3TargetLocation }}/'
+);
 
 USE iceberg.{{ .TargetSchema }};
 {{- else }}
