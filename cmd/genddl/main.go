@@ -146,8 +146,8 @@ func generateSchemaFromDef(schema *Schema, defDir string, configDir string, outp
 			log.Fatal().Err(umErr).Str("file", entry.Name()).Msg("Failed to unmarshal file to type Table")
 		}
 		tbl.initIsVarchar() // Populates the IsVarchar var for all columns
-		// Set partitioned if above scale factor min
-		if tbl.isPartitioned(schema.intScaleFactor()) {
+		// Set partitioned if above scale factor min or if schema.Partitioned is true
+		if tbl.isPartitioned(schema.intScaleFactor(), schema.Partitioned, schema.Mode) {
 			tbl.Partitioned = true
 		}
 
@@ -558,10 +558,32 @@ func toHyphen(s string) string {
 	return strings.Replace(s, "_", "-", 1)
 }
 
-func (t *Table) isPartitioned(sf int) bool {
+func (t *Table) isPartitioned(sf int, schemaPartitioned bool, mode string) bool {
+	// If table has partition keys defined, check partitioning logic
+	hasPartitionKeys := false
+	for _, col := range t.Columns {
+		if col.PartitionKey != nil && *col.PartitionKey {
+			hasPartitionKeys = true
+			break
+		}
+	}
+	
+	// If no partition keys defined, table cannot be partitioned
+	if !hasPartitionKeys {
+		return false
+	}
+	
+	// If schema.Partitioned is explicitly true AND mode is enhanced_ingestion, override min scale check
+	if schemaPartitioned && mode == "enhanced_ingestion" {
+		return true
+	}
+	
+	// If PartitionedMinScale is set, check scale factor threshold
 	if t.PartitionedMinScale > 0 {
 		return sf >= t.PartitionedMinScale
 	}
+	
+	// Otherwise, use the Partitioned field from table definition
 	return t.Partitioned
 }
 
