@@ -116,3 +116,8 @@ SELECT
 FROM tpcds.sf10.web_sales;
 
 
+
+ANALYZE catalog_sales;
+ANALYZE inventory;
+ANALYZE store_sales;
+ANALYZE web_sales;

@@ -75,8 +75,6 @@ SELECT * FROM {{ if $.Iceberg }}iceberg{{ else }}hive{{ end }}.{{ $.Uncompressed
 {{ end }}
 {{- end }}
 
-{{- if eq .Engine "presto" }}
-{{- range .InsertTables -}}
+{{ range .InsertTables -}}
 ANALYZE {{ .Name }};
 {{ end -}}
-{{- end }}
