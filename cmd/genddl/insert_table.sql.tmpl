@@ -3,7 +3,7 @@
 SET SESSION {{ $key }}='{{ $value }}';
 {{ end }}
 
-{{- if .TargetSchema }}
+{{- if eq .Mode "enhanced_ingestion" }}
 {{- /* ENHANCED_INGESTION MODE */ -}}
 {{- if .TargetCatalog }}
 USE {{ .TargetCatalog }}.{{ .TargetSchema }};
@@ -75,6 +75,8 @@ SELECT * FROM {{ if $.Iceberg }}iceberg{{ else }}hive{{ end }}.{{ $.Uncompressed
 {{ end }}
 {{- end }}
 
+{{- if eq .Engine "presto" }}
 {{- range .InsertTables -}}
 ANALYZE {{ .Name }};
 {{ end -}}
+{{- end }}

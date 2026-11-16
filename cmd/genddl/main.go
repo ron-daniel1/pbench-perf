@@ -41,7 +41,7 @@ type Schema struct {
 	SourceFileFormat string `json:"source_file_format"` // "CSV" or "TEXTFILE"
 	SourceCatalog    string `json:"source_catalog"`     // Source catalog name (optional)
 	TargetCatalog    string `json:"target_catalog"`     // Target catalog name (optional)
-	Engine           string `json:"engine"`             // "presto" or "spark"
+	Engine           string `json:"engine"`             // "presto"
 }
 
 type Column struct {
@@ -158,8 +158,7 @@ func generateSchemaFromDef(schema *Schema, defDir string, configDir string, outp
 			schema.RegisterTables = append(schema.RegisterTables, &registerTable)
 		} else {
 			// Only reorder columns for Hive tables (Iceberg doesn't require partition columns at end)
-			// In enhanced ingestion mode, skip reordering for Iceberg tables
-			if !schema.Iceberg || !schema.isEnhancedIngestionMode() {
+			if !schema.Iceberg {
 				tbl.reorderColumns(schema)
 			}
 			// Set LastColumn for template rendering (finds partition key or uses last column)
@@ -181,7 +180,7 @@ func generateSchemaFromDef(schema *Schema, defDir string, configDir string, outp
 }
 
 func generateCreateTable(schema *Schema, currDir string, outputDirs []string, step int) {
-	genSubSteps := !schema.Iceberg && schema.Partitioned
+	genSubSteps := !schema.isEnhancedIngestionMode() && !schema.Iceberg && schema.Partitioned
 
 	if schema.isEnhancedIngestionMode() {
 		// Enhanced ingestion mode: generate separate source and target table files
@@ -371,6 +370,29 @@ func getNamedOutput(configData []byte, workload string) (string, error) {
 	return workload + "-sf" + scaleFactor + "-" + fileFormat + compressionSuffix, nil
 }
 
+// validateEnhancedIngestion checks that all fields required by the enhanced ingestion workflow are set and valid.
+func (s *Schema) validateEnhancedIngestion() error {
+	if s.SourceSchema == "" {
+		return fmt.Errorf("enhanced_ingestion mode requires a non-empty source_schema")
+	}
+	if s.TargetSchema == "" {
+		return fmt.Errorf("enhanced_ingestion mode requires a non-empty target_schema")
+	}
+	if s.S3SourceLocation == "" {
+		return fmt.Errorf("enhanced_ingestion mode requires a non-empty s3_source_location")
+	}
+	if s.S3TargetLocation == "" {
+		return fmt.Errorf("enhanced_ingestion mode requires a non-empty s3_target_location")
+	}
+	if s.SourceFileFormat != "CSV" && s.SourceFileFormat != "TEXTFILE" {
+		return fmt.Errorf("invalid source_file_format %q in enhanced_ingestion mode: must be \"CSV\" or \"TEXTFILE\"", s.SourceFileFormat)
+	}
+	if s.Engine != "presto" {
+		return fmt.Errorf("invalid engine %q in enhanced_ingestion mode: only \"presto\" is currently supported", s.Engine)
+	}
+	return nil
+}
+
 func loadSchemas(data []byte) ([]*Schema, error) {
 	var schemas []*Schema
 	// Load the base schema
@@ -393,9 +415,14 @@ func loadSchemas(data []byte) ([]*Schema, error) {
 	if base.WorkloadDefinition == "" {
 		base.WorkloadDefinition = "tpc-ds"
 	}
-	// Default engine for enhanced ingestion mode
-	if base.Engine == "" && base.isEnhancedIngestionMode() {
-		base.Engine = "presto"
+	if base.isEnhancedIngestionMode() {
+		// Default engine for enhanced ingestion mode
+		if base.Engine == "" {
+			base.Engine = "presto"
+		}
+		if err := base.validateEnhancedIngestion(); err != nil {
+			return schemas, err
+		}
 	}
 
 	// In enhanced ingestion mode, detect catalog type and generate only for that type

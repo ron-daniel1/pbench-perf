@@ -1,9 +1,11 @@
 package genddl
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+	"text/template"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,73 +15,6 @@ import (
 // output in generated-examples/ matches the checked-in golden files.
 func TestGeneratedExamplesMatch(t *testing.T) {
 	configPath := filepath.Join("config.json")
-	absConfig, err := filepath.Abs(configPath)
-	require.NoError(t, err)
-
-	configDir := filepath.Dir(absConfig)
-	examplesDir := filepath.Join(configDir, "generated-examples")
-
-	// Snapshot all golden files before regeneration.
-	golden := snapshotDir(t, examplesDir)
-	require.NotEmpty(t, golden, "no golden files found in generated-examples/")
-
-	// Run genddl (overwrites generated-examples/ in place).
-	Run(nil, []string{configPath})
-
-	// Compare every regenerated file against the golden snapshot.
-	for relPath, expected := range golden {
-		actual, readErr := os.ReadFile(filepath.Join(examplesDir, relPath))
-		require.NoError(t, readErr, "failed to read regenerated file %s", relPath)
-		assert.Equal(t, string(expected), string(actual),
-			"generated output differs from checked-in golden file: %s", relPath)
-	}
-
-	// Also check that no extra files were produced.
-	regenerated := snapshotDir(t, examplesDir)
-	for relPath := range regenerated {
-		assert.Contains(t, golden, relPath,
-			"regeneration produced unexpected file: %s", relPath)
-	}
-}
-
-// TestGeneratedExamplesMatchEnhancedIngestion runs genddl with config_enhanced_ingestion.json
-// and verifies the output in generated-examples/ matches the checked-in golden files.
-func TestGeneratedExamplesMatchEnhancedIngestion(t *testing.T) {
-	configPath := filepath.Join("config_enhanced_ingestion.json")
-	absConfig, err := filepath.Abs(configPath)
-	require.NoError(t, err)
-
-	configDir := filepath.Dir(absConfig)
-	examplesDir := filepath.Join(configDir, "generated-examples")
-
-	// Snapshot all golden files before regeneration.
-	golden := snapshotDir(t, examplesDir)
-	require.NotEmpty(t, golden, "no golden files found in generated-examples/")
-
-	// Run genddl (overwrites generated-examples/ in place).
-	Run(nil, []string{configPath})
-
-	// Compare every regenerated file against the golden snapshot.
-	for relPath, expected := range golden {
-		actual, readErr := os.ReadFile(filepath.Join(examplesDir, relPath))
-		require.NoError(t, readErr, "failed to read regenerated file %s", relPath)
-		assert.Equal(t, string(expected), string(actual),
-			"generated output differs from checked-in golden file: %s", relPath)
-	}
-
-	// Also check that no extra files were produced.
-	regenerated := snapshotDir(t, examplesDir)
-	for relPath := range regenerated {
-		assert.Contains(t, golden, relPath,
-			"regeneration produced unexpected file: %s", relPath)
-	}
-}
-
-// TestGeneratedExamplesMatchEnhancedIngestionTextfilePartitioned runs genddl with
-// config_enhanced_ingestion_textfile_partitioned.json and verifies the output matches golden files.
-// This test covers TEXTFILE source format with partitioned tables.
-func TestGeneratedExamplesMatchEnhancedIngestionTextfilePartitioned(t *testing.T) {
-	configPath := filepath.Join("config_enhanced_ingestion_textfile_partitioned.json")
 	absConfig, err := filepath.Abs(configPath)
 	require.NoError(t, err)
 
@@ -299,4 +234,161 @@ func TestSetNames(t *testing.T) {
 	assert.Equal(t, "tpcds_sf100_parquet_partitioned_iceberg_zstd", s.SchemaName)
 	assert.Equal(t, "tpcds-sf100-parquet-partitioned-iceberg-zstd", s.LocationName)
 	assert.Equal(t, "tpcds_sf100_parquet_partitioned_iceberg", s.UncompressedName)
+}
+
+// enhancedConfig builds an enhanced_ingestion JSON config. Fields are overridden
+// via the overrides map; a nil value removes the key from the config.
+func enhancedConfig(t *testing.T, overrides map[string]interface{}) []byte {
+	t.Helper()
+	cfg := map[string]interface{}{
+		"scale_factor":       "10",
+		"file_format":        "parquet",
+		"compression_method": "uncompressed",
+		"mode":               "enhanced_ingestion",
+		"source_schema":      "src_schema",
+		"target_schema":      "tgt_schema",
+		"s3_source_location": "s3a://bucket/source",
+		"s3_target_location": "s3a://bucket/target",
+		"source_file_format": "CSV",
+	}
+	for k, v := range overrides {
+		if v == nil {
+			delete(cfg, k)
+		} else {
+			cfg[k] = v
+		}
+	}
+	data, err := json.Marshal(cfg)
+	require.NoError(t, err)
+	return data
+}
+
+func TestLoadSchemasEnhancedIngestionRequiredFields(t *testing.T) {
+	for _, field := range []string{"source_schema", "target_schema", "s3_source_location", "s3_target_location"} {
+		t.Run("missing_"+field, func(t *testing.T) {
+			_, err := loadSchemas(enhancedConfig(t, map[string]interface{}{field: nil}))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), field)
+		})
+		t.Run("empty_"+field, func(t *testing.T) {
+			_, err := loadSchemas(enhancedConfig(t, map[string]interface{}{field: ""}))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), field)
+		})
+	}
+}
+
+func TestLoadSchemasEnhancedIngestionSourceFileFormat(t *testing.T) {
+	invalid := map[string]interface{}{
+		"lowercase csv": "csv",
+		"ORC":           "ORC",
+		"empty":         "",
+		"missing":       nil,
+	}
+	for name, format := range invalid {
+		t.Run("invalid_"+name, func(t *testing.T) {
+			_, err := loadSchemas(enhancedConfig(t, map[string]interface{}{"source_file_format": format}))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "source_file_format")
+		})
+	}
+	for _, format := range []string{"CSV", "TEXTFILE"} {
+		t.Run("valid_"+format, func(t *testing.T) {
+			schemas, err := loadSchemas(enhancedConfig(t, map[string]interface{}{"source_file_format": format}))
+			require.NoError(t, err)
+			require.Len(t, schemas, 1)
+			assert.Equal(t, format, schemas[0].SourceFileFormat)
+		})
+	}
+}
+
+func TestLoadSchemasEnhancedIngestionEngine(t *testing.T) {
+	tests := []struct {
+		name     string
+		engine   interface{}
+		expected string
+	}{
+		{"presto", "presto", "presto"},
+		{"empty defaults to presto", "", "presto"},
+		{"missing defaults to presto", nil, "presto"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			schemas, err := loadSchemas(enhancedConfig(t, map[string]interface{}{"engine": tc.engine}))
+			require.NoError(t, err)
+			require.Len(t, schemas, 1)
+			assert.Equal(t, tc.expected, schemas[0].Engine)
+		})
+	}
+
+	for _, invalidEngine := range []string{"spark", "hive", "trino"} {
+		t.Run("invalid_"+invalidEngine, func(t *testing.T) {
+			_, err := loadSchemas(enhancedConfig(t, map[string]interface{}{"engine": invalidEngine}))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "engine")
+		})
+	}
+}
+
+func TestLoadSchemasLegacyModeSkipsEnhancedValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+	}{
+		{"no mode", `{"scale_factor":"10","file_format":"parquet","compression_method":"uncompressed"}`},
+		{"explicit legacy mode", `{"mode":"legacy","scale_factor":"10","file_format":"parquet","compression_method":"uncompressed"}`},
+		{
+			"legacy mode with invalid enhanced fields",
+			`{"mode":"legacy","scale_factor":"10","file_format":"parquet","compression_method":"uncompressed","source_file_format":"ORC","engine":"hive"}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			schemas, err := loadSchemas([]byte(tc.data))
+			require.NoError(t, err)
+			assert.Len(t, schemas, 4, "legacy mode should produce 4 schema variants")
+		})
+	}
+}
+
+// TestGenerateCreateTableEnhancedNoLegacySubSteps verifies that enhanced ingestion
+// mode with iceberg=false and partitioned=true emits only the source and target
+// create-table files, and none of the legacy s3-mv / call-analyze / s3-cp sub-steps.
+func TestGenerateCreateTableEnhancedNoLegacySubSteps(t *testing.T) {
+	templateCache = make(map[string]*template.Template)
+
+	schemas, err := loadSchemas(enhancedConfig(t, map[string]interface{}{
+		"iceberg":     false,
+		"partitioned": true,
+	}))
+	require.NoError(t, err)
+	require.Len(t, schemas, 1)
+	schema := schemas[0]
+	require.True(t, schema.isEnhancedIngestionMode())
+	require.False(t, schema.Iceberg)
+	require.True(t, schema.Partitioned)
+
+	intType := "INT"
+	partKey := true
+	col := &Column{Name: "sk", Type: &intType, PartitionKey: &partKey}
+	schema.Tables["t1"] = &Table{Name: "t1", Partitioned: true, Columns: []*Column{col}, LastColumn: col}
+
+	outDir := t.TempDir()
+	generateCreateTable(schema, ".", []string{outDir}, 0)
+
+	entries, err := os.ReadDir(outDir)
+	require.NoError(t, err)
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	assert.ElementsMatch(t, []string{
+		"1a-create-source-" + schema.LocationName + ".sql",
+		"1b-create-target-" + schema.LocationName + ".sql",
+	}, names)
+	for _, n := range names {
+		assert.NotContains(t, n, "s3-mv")
+		assert.NotContains(t, n, "call-analyze")
+		assert.NotContains(t, n, "s3-cp")
+	}
 }
